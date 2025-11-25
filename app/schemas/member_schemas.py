@@ -8,6 +8,10 @@ class MemberAdd(BaseModel):
     role: str  # ADMIN, MEMBER, VIEWER
 
 
+class MemberRoleUpdate(BaseModel):
+    role: str  # ADMIN, MEMBER, VIEWER, OWNER
+
+
 class MemberResponse(BaseModel):
     id: str
     workspace_id: str
@@ -15,6 +19,7 @@ class MemberResponse(BaseModel):
     display_name: Optional[str]
     role: str
     added_at: datetime
+    pma_token: Optional[str] = None  # Refreshed PMA token if roles changed for current user
 
 
 class MemberListResponse(BaseModel):

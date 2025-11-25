@@ -19,6 +19,7 @@ class WorkspaceResponse(BaseModel):
     is_active: bool
     members: Optional[List[dict]] = None
     external_links: Optional[List[dict]] = None
+    pma_token: Optional[str] = None  # Refreshed PMA token if roles changed
 
 
 class WorkspaceListResponse(BaseModel):

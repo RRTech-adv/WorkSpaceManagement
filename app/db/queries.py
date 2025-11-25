@@ -151,6 +151,67 @@ async def add_workspace_member(
     }
 
 
+async def update_workspace_member_role(
+    pool,
+    member_id: str,
+    workspace_id: str,
+    new_role: str
+) -> Optional[Dict]:
+    """Update a member's role in a workspace."""
+    current_time = DBAdapter.get_current_time_sql()
+    await _execute_query(
+        pool,
+        f"""
+        UPDATE WorkspaceMember
+        SET role = ?, added_at = {current_time}
+        WHERE id = ? AND workspace_id = ?
+        """,
+        (new_role, member_id, workspace_id),
+        commit=True
+    )
+    
+    row = await _execute_query(
+        pool,
+        "SELECT id, workspace_id, user_id, display_name, role, added_at FROM WorkspaceMember WHERE id = ?",
+        (member_id,),
+        fetch_one=True
+    )
+    
+    if not row:
+        return None
+    
+    return {
+        "id": str(row[0]),
+        "workspace_id": str(row[1]),
+        "user_id": row[2],
+        "display_name": row[3],
+        "role": row[4],
+        "added_at": row[5]
+    }
+
+
+async def get_workspace_member_by_user_id(pool, workspace_id: str, user_id: str) -> Optional[Dict]:
+    """Get a workspace member by user_id and workspace_id."""
+    row = await _execute_query(
+        pool,
+        "SELECT id, workspace_id, user_id, display_name, role, added_at FROM WorkspaceMember WHERE workspace_id = ? AND user_id = ?",
+        (workspace_id, user_id),
+        fetch_one=True
+    )
+    
+    if not row:
+        return None
+    
+    return {
+        "id": str(row[0]),
+        "workspace_id": str(row[1]),
+        "user_id": row[2],
+        "display_name": row[3],
+        "role": row[4],
+        "added_at": row[5]
+    }
+
+
 async def get_workspace_by_id(pool, workspace_id: str) -> Optional[Dict]:
     """Get workspace by ID."""
     row = await _execute_query(

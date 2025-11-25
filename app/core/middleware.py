@@ -77,6 +77,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         workspace_id = None
         role_for_workspace = None
         
+        # Get roles from PMA token
+        roles = pma_payload.get("roles", {})
+        
         # Try to extract workspace_id from path
         # Handles patterns like: /workspaces/{id}, /workspaces/{id}/members, etc.
         path_parts = [p for p in request.url.path.split("/") if p]
@@ -89,16 +92,52 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     if len(workspace_id) == 36:  # GUID length
                         role_for_workspace = get_role_for_workspace(
                             workspace_id,
-                            pma_payload.get("roles", {})
+                            roles
                         )
+                        
+                        # If role is not found in token but user is authenticated,
+                        # refresh roles from database (handles case where user was just added to workspace)
+                        # This is important for scenarios like:
+                        # - User just created a workspace (token doesn't have it yet)
+                        # - User was just added to a workspace by another user
+                        # - User's token is stale
+                        if not role_for_workspace:
+                            try:
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.info(f"Role not found in token for workspace {workspace_id}. Querying database for fresh roles...")
+                                
+                                from app.db.connection import get_db_pool
+                                from app.db.queries import get_user_workspace_roles
+                                pool = await get_db_pool()
+                                fresh_roles = await get_user_workspace_roles(pool, pma_payload["user_id"])
+                                
+                                if fresh_roles:
+                                    # Update roles dict with fresh data from database
+                                    roles.update(fresh_roles)
+                                    role_for_workspace = get_role_for_workspace(
+                                        workspace_id,
+                                        fresh_roles
+                                    )
+                                    if role_for_workspace:
+                                        logger.info(f"Found role '{role_for_workspace}' for user {pma_payload['user_id']} in workspace {workspace_id} from database. Token was missing this role.")
+                                    else:
+                                        logger.warning(f"User {pma_payload['user_id']} not found in workspace {workspace_id} even after database query.")
+                                else:
+                                    logger.warning(f"No roles found in database for user {pma_payload['user_id']}")
+                            except Exception as e:
+                                # If DB refresh fails, continue with empty role (will be handled by require_role)
+                                import logging
+                                logger = logging.getLogger(__name__)
+                                logger.error(f"Failed to refresh roles from DB for user {pma_payload['user_id']}: {e}")
             except (ValueError, IndexError):
                 pass
         
-        # Attach context to request
+        # Attach context to request (use refreshed roles if they were updated)
         request.state.user = CurrentUserContext(
             user_id=pma_payload["user_id"],
             email=pma_payload["email"],
-            roles=pma_payload.get("roles", {}),
+            roles=roles,  # Use roles (may have been refreshed from DB)
             role_for_workspace=role_for_workspace
         )
         

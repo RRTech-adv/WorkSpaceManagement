@@ -1,7 +1,13 @@
 from typing import Optional
 import uuid
 from app.db.connection import get_db_pool
-from app.db.queries import add_workspace_member, delete_workspace_member, get_workspace_members
+from app.db.queries import (
+    add_workspace_member,
+    delete_workspace_member,
+    get_workspace_members,
+    update_workspace_member_role,
+    get_workspace_member_by_user_id
+)
 from app.services.audit_service import AuditService
 
 
@@ -41,14 +47,61 @@ class MemberService:
         
         return member
     
+    async def update_member_role(
+        self,
+        workspace_id: str,
+        member_id: str,
+        new_role: str,
+        actor_id: str
+    ) -> Optional[dict]:
+        """Update a member's role in a workspace."""
+        pool = await get_db_pool()
+        member = await update_workspace_member_role(
+            pool,
+            member_id,
+            workspace_id,
+            new_role
+        )
+        
+        if member:
+            await self.audit_service.log_action(
+                workspace_id,
+                "MEMBER_ROLE_UPDATED",
+                actor_id,
+                {"member_id": member_id, "new_role": new_role}
+            )
+        
+        return member
+    
     async def remove_member(
         self,
         workspace_id: str,
         member_id: str,
         actor_id: str
-    ) -> bool:
-        """Remove a member from a workspace."""
+    ) -> Optional[dict]:
+        """Remove a member from a workspace. Returns member info if found."""
         pool = await get_db_pool()
+        # Get member info before deletion - need to query by member_id first
+        from app.db.queries import _execute_query
+        row = await _execute_query(
+            pool,
+            "SELECT id, workspace_id, user_id, display_name, role, added_at FROM WorkspaceMember WHERE id = ? AND workspace_id = ?",
+            (member_id, workspace_id),
+            fetch_one=True
+        )
+        
+        if not row:
+            return None
+        
+        member = {
+            "id": str(row[0]),
+            "workspace_id": str(row[1]),
+            "user_id": row[2],
+            "display_name": row[3],
+            "role": row[4],
+            "added_at": row[5]
+        }
+        
         result = await delete_workspace_member(pool, member_id, workspace_id)
         
         if result:
@@ -58,8 +111,9 @@ class MemberService:
                 actor_id,
                 {"member_id": member_id}
             )
+            return member
         
-        return result
+        return None
     
     async def list_members(self, workspace_id: str) -> list:
         """List all members of a workspace."""
