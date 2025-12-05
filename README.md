@@ -5,15 +5,16 @@ Production-grade FastAPI backend for workspace management with Azure Entra ID au
 ## Features
 
 - **Raw SQL Queries**: All database operations use raw SQL (no ORM)
-- **Multi-Database Support**: Switch between SQL Server and SQLite3 via configuration
+- **SQL Server**: Async connection pooling with aioodbc
+- **Two-Level Database Architecture**: Global schema for metadata, per-workspace schemas for tenant data
 - **Azure Entra ID JWT Authentication**: Validates Azure tokens
 - **Custom PM Assist Token**: Per-workspace role-based authorization
-- **SQL Server**: Async connection pooling with aioodbc
-- **SQLite3**: Local development database support
 - **Azure Blob Storage**: Automatic folder creation for workspaces
 - **External Integrations**: Jira, Azure DevOps, ServiceNow PPM, SharePoint
 - **Audit Logging**: Complete audit trail for all actions
 - **Role-Based Access Control**: OWNER, ADMIN, MEMBER, VIEWER roles
+- **Enhanced Error Handling**: Categorized error codes for better frontend integration
+- **Comprehensive Logging**: Detailed logging with configurable log levels
 
 ## Project Structure
 
@@ -27,7 +28,8 @@ app/
 │   ├── integrations_jira.py
 │   ├── integrations_ado.py
 │   ├── integrations_snow.py
-│   └── integrations_sp.py
+│   ├── integrations_sp.py
+│   └── db_init.py
 ├── core/                   # Core configuration and security
 │   ├── config.py
 │   ├── security.py
@@ -36,7 +38,8 @@ app/
 │   └── middleware.py
 ├── db/                     # Database layer
 │   ├── connection.py
-│   └── queries.py
+│   ├── queries.py
+│   └── workspace_schema.py  # Per-workspace schema management
 ├── services/               # Business logic services
 │   ├── workspace_service.py
 │   ├── member_service.py
@@ -49,6 +52,24 @@ app/
     ├── member_schemas.py
     └── integration_schemas.py
 ```
+
+## Database Architecture
+
+The application uses a **two-level database architecture**:
+
+### 1. Global Schema (`pmassist_master`)
+Contains shared metadata:
+- **Workspace**: Workspace definitions with schema names
+- **WorkspaceMember**: User memberships and roles
+- **AuditLog**: Global audit trail
+
+### 2. Per-Workspace Schemas (`ws_<guid>`)
+Each workspace gets its own schema with tenant-specific data:
+- **workspace_integrations**: External system integrations (Jira, ADO, ServiceNow, SharePoint)
+- **workspace_agents**: Workspace-specific agents
+- **automation_jobs**: Scheduled automation jobs
+- **automation_job_runs**: Job execution history
+- **file_artifacts**: Generated files and artifacts
 
 ## Setup
 
@@ -66,64 +87,29 @@ Copy `.env.example` to `.env` and fill in your values:
 cp .env.example .env
 ```
 
+Required environment variables:
+- Database: `DB_SERVER`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
+- Azure Entra ID: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_AUDIENCE`
+- PMA Token: `PMA_TOKEN_SECRET`
+- Blob Storage: `AZURE_STORAGE_CONNECTION_STRING` (optional)
+- Integration tokens (optional): `JIRA_API_TOKEN`, `JIRA_BASE_URL`, etc.
+
 3. **Database Setup**
 
-Choose your database type:
+Run the SQL Server schema script to create the global schema:
 
-**Option A: SQL Server**
-Run the SQL scripts to create tables in SQL Server:
-
-```sql
-CREATE TABLE Workspace (
-    id UNIQUEIDENTIFIER PRIMARY KEY,
-    name NVARCHAR(255) NOT NULL,
-    description NVARCHAR(MAX) NULL,
-    created_by NVARCHAR(200) NOT NULL,
-    created_at DATETIME2 DEFAULT SYSDATETIME(),
-    updated_at DATETIME2 DEFAULT SYSDATETIME(),
-    blob_path NVARCHAR(500),
-    is_active BIT DEFAULT 1
-);
-
-CREATE TABLE WorkspaceMember (
-    id UNIQUEIDENTIFIER PRIMARY KEY,
-    workspace_id UNIQUEIDENTIFIER NOT NULL,
-    user_id NVARCHAR(200) NOT NULL,
-    display_name NVARCHAR(200),
-    role NVARCHAR(50) NOT NULL,
-    added_at DATETIME2 DEFAULT SYSDATETIME(),
-    CONSTRAINT FK_WorkspaceMember_Workspace FOREIGN KEY (workspace_id) REFERENCES Workspace(id)
-);
-
-CREATE TABLE WorkspaceExternalLink (
-    id UNIQUEIDENTIFIER PRIMARY KEY,
-    workspace_id UNIQUEIDENTIFIER NOT NULL,
-    provider NVARCHAR(50) NOT NULL,
-    external_id NVARCHAR(255) NOT NULL,
-    display_name NVARCHAR(255),
-    config NVARCHAR(MAX),
-    linked_at DATETIME2 DEFAULT SYSDATETIME(),
-    CONSTRAINT FK_WorkspaceExternalLink_Workspace FOREIGN KEY (workspace_id) REFERENCES Workspace(id)
-);
-
-CREATE TABLE AuditLog (
-    id UNIQUEIDENTIFIER PRIMARY KEY,
-    workspace_id UNIQUEIDENTIFIER NOT NULL,
-    action NVARCHAR(255) NOT NULL,
-    actor_id NVARCHAR(200) NOT NULL,
-    details NVARCHAR(MAX) NULL,
-    timestamp DATETIME2 DEFAULT SYSDATETIME(),
-    CONSTRAINT FK_AuditLog_Workspace FOREIGN KEY (workspace_id) REFERENCES Workspace(id)
-);
-```
-
-**Option B: SQLite (for local development)**
-Run the SQLite schema script:
 ```bash
-sqlite3 app.db < database_schema_sqlite.sql
+# Run database_schema.sql in your SQL Server instance
+# This creates the pmassist_master schema and tables
 ```
 
-Or set `DB_TYPE=sqlite` and `DB_NAME=app.db` in your `.env` file. The database will be created automatically if it doesn't exist.
+The script creates:
+- `pmassist_master` schema
+- `pmassist_master.Workspace` table (with `db_schema_name`, `status`, `last_seen_utc` fields)
+- `pmassist_master.WorkspaceMember` table
+- `pmassist_master.AuditLog` table
+
+**Per-workspace schemas are automatically created** when workspaces are created through the API.
 
 4. **Run the Application**
 
@@ -142,41 +128,43 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ### Authentication
 
 - `POST /auth/validate` - Validate Azure token and get PMA token
+- `POST /auth/refresh` - Refresh PMA token with updated roles
 
 ### Workspaces
 
-- `POST /workspaces` - Create workspace
-- `GET /workspaces` - List workspaces for user
-- `GET /workspaces/{id}` - Get workspace details
+- `POST /workspaces` - Create workspace (with optional provider/provider_project for initial integration)
+  - Request body includes: `name`, `description`, `provider` (optional), `provider_project` (optional)
+- `GET /workspaces` - List workspaces for user (includes integrations)
+- `GET /workspaces/{id}` - Get workspace details (includes members and integrations)
 - `DELETE /workspaces/{id}` - Soft delete workspace
 
 ### Members
 
 - `POST /workspaces/{id}/members` - Add member
 - `GET /workspaces/{id}/members` - List members
+- `PATCH /workspaces/{id}/members/{member_id}` - Update member role
 - `DELETE /workspaces/{id}/members/{member_id}` - Remove member
 
 ### Integrations
 
 #### Jira
-- `GET /integrations/jira/projects` - List projects
-- `GET /integrations/jira/projects/{project_id}` - Get project details
-- `POST /workspaces/{id}/links/jira` - Link Jira project
+- `GET /integrations/jira/projects` - List Jira projects
 
 #### Azure DevOps
-- `GET /integrations/ado/projects` - List projects
-- `GET /integrations/ado/projects/{project_id}` - Get project details
-- `POST /workspaces/{id}/links/ado` - Link ADO project
+- `GET /integrations/ado/projects` - List Azure DevOps projects
 
 #### ServiceNow
-- `GET /integrations/snow/spaces` - List spaces
-- `GET /integrations/snow/spaces/{space_id}` - Get space details
-- `POST /workspaces/{id}/links/snow` - Link ServiceNow space
+- `GET /integrations/snow/spaces` - List ServiceNow PPM spaces
 
 #### SharePoint
-- `GET /integrations/sharepoint/sites` - List sites
-- `GET /integrations/sharepoint/sites/{site_id}` - Get site details
-- `POST /workspaces/{id}/links/sharepoint` - Link SharePoint site
+- `GET /integrations/sharepoint/sites` - List SharePoint sites
+
+**Note**: Integration details are stored in per-workspace schemas and are automatically included in workspace responses.
+
+### Database
+
+- `POST /db/init` - Get database initialization instructions
+- `GET /db/status` - Check database connection and table status
 
 ## Authentication Flow
 
@@ -189,10 +177,28 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ## Authorization
 
 Roles are hierarchical:
-- **OWNER**: Full access
+- **OWNER**: Full access, can delete workspace
 - **ADMIN**: Manage members and integrations
 - **MEMBER**: Partial access
-- **VIEWER**: Read-only
+- **VIEWER**: Read-only access
+
+## Workspace Creation
+
+When creating a workspace, you can optionally provide:
+- `provider`: Integration provider (Jira, ADO, SNOW, SP)
+- `provider_project`: Project name/ID for the integration
+
+If provided, an initial integration entry is automatically created in the workspace's schema.
+
+**Example Request:**
+```json
+{
+    "name": "My Workspace",
+    "description": "Workspace description",
+    "provider": "Jira",
+    "provider_project": "PROJ-123"
+}
+```
 
 ## Error Handling
 
@@ -205,15 +211,44 @@ All errors return consistent JSON format:
 }
 ```
 
-Common error codes:
-- `MISSING_AZURE_TOKEN`
-- `MISSING_PMA_TOKEN`
-- `INVALID_AZURE_TOKEN`
-- `INVALID_PMA_TOKEN`
-- `USER_NOT_AUTHORIZED`
-- `WORKSPACE_NOT_FOUND`
-- `DB_QUERY_FAILED`
-- `INTEGRATION_FAILURE`
+### Error Codes
+
+**Authentication & Authorization:**
+- `MISSING_AZURE_TOKEN` - Azure token not provided
+- `MISSING_PMA_TOKEN` - PMA token not provided
+- `INVALID_AZURE_TOKEN` - Azure token invalid or expired
+- `INVALID_PMA_TOKEN` - PMA token invalid or expired
+- `TOKEN_MISMATCH` - Token user mismatch
+- `USER_NOT_AUTHORIZED` - User lacks required permission
+- `PERMISSION_DENIED` - Permission denied
+
+**Validation:**
+- `VALIDATION_ERROR` - Request validation failed (includes field-level details)
+- `INVALID_REQUEST` - Invalid request format
+- `MISSING_REQUIRED_FIELD` - Required field missing
+
+**Resources:**
+- `WORKSPACE_NOT_FOUND` - Workspace not found
+- `RESOURCE_NOT_FOUND` - Resource not found
+- `MEMBER_NOT_FOUND` - Member not found
+
+**Database:**
+- `DATABASE_ERROR` - Database operation error
+- `DATABASE_CONNECTION_ERROR` - Database connection failed
+- `DB_QUERY_FAILED` - Database query failed
+
+**Network & External Services:**
+- `NETWORK_ERROR` - Network connection failed
+- `REQUEST_TIMEOUT` - Request timed out
+- `EXTERNAL_SERVICE_ERROR` - External API error
+- `INTEGRATION_FAILURE` - Integration operation failed
+
+**Storage:**
+- `STORAGE_ERROR` - Blob storage error
+
+**General:**
+- `INTERNAL_SERVER_ERROR` - Unexpected server error
+- `HTTP_ERROR` - Generic HTTP error
 
 ## Integration Configuration
 
@@ -229,7 +264,57 @@ Integration tokens are configured via environment variables in `.env` file:
 
 See `.env.example` for the complete configuration template.
 
+## Logging
+
+The application uses Python's built-in logging module. Logs are output to the console by default.
+
+**Configuration:**
+- Set `LOG_LEVEL` in `.env` file (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- Default: `INFO`
+
+**View Logs:**
+- Logs appear in the console/terminal where the application is running
+- Full exception details are logged for debugging
+- Log format: `YYYY-MM-DD HH:MM:SS,mmm - logger_name - LEVEL - message`
+
+See `LOGGING_GUIDE.md` for detailed logging documentation.
+
+## Database Schema Details
+
+### Global Schema: `pmassist_master`
+
+**Workspace Table:**
+- Standard fields: `id`, `name`, `description`, `created_by`, `created_at`, `updated_at`, `blob_path`, `is_active`
+- New fields: `db_schema_name` (per-workspace schema name), `last_seen_utc`, `status` (Active/Archived)
+
+**Per-Workspace Schema Structure:**
+Each workspace schema (`ws_<guid_no_hyphens>`) contains:
+- `workspace_integrations` - External system integrations
+- `workspace_agents` - Workspace-specific agents
+- `automation_jobs` - Scheduled jobs
+- `automation_job_runs` - Job execution history
+- `file_artifacts` - Generated files
+
+## Development
+
+### Running in Development Mode
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+```
+
+### Database Status Check
+
+```bash
+curl http://localhost:8000/db/status
+```
+
+### Health Check
+
+```bash
+curl http://localhost:8000/health
+```
+
 ## License
 
 Proprietary
-
