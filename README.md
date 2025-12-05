@@ -1,4 +1,4 @@
-# PM Assist FastAPI Backend
+# WSMS FastAPI Backend
 
 Production-grade FastAPI backend for workspace management with Azure Entra ID authentication, SQL Server, and external integrations.
 
