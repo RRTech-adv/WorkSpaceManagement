@@ -34,7 +34,9 @@ async def create_workspace(
             name=workspace_data.name,
             description=workspace_data.description,
             created_by=user.user_id,
-            creator_display_name=user.email
+            creator_display_name=user.email,
+            provider=workspace_data.provider,
+            provider_project=workspace_data.provider_project
         )
         
         workspace_id = workspace["id"]

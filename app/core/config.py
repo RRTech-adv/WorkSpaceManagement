@@ -3,14 +3,12 @@ from typing import Optional
 
 
 class Settings(BaseSettings):
-    # Database
-    db_type: str = "sqlite"  # "sqlserver" or "sqlite"
+    # Database (SQL Server only)
     db_server: Optional[str] = None
     db_name: Optional[str] = None
     db_user: Optional[str] = None
     db_password: Optional[str] = None
     db_driver: str = "ODBC Driver 18 for SQL Server"
-    # For SQLite: db_name should be the path to the .db file (e.g., "app.db" or "/path/to/database.db")
     
     # Azure Entra ID
     azure_tenant_id: Optional[str] = None

@@ -6,6 +6,8 @@ from datetime import datetime
 class WorkspaceCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    provider: Optional[str] = None  # Jira / ADO / SNOW / SP
+    provider_project: Optional[str] = None  # Project name/ID for integration display name
 
 
 class WorkspaceResponse(BaseModel):

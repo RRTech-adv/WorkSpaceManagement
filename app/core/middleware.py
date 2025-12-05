@@ -30,6 +30,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.exclude_paths = exclude_paths or ["/docs", "/openapi.json", "/redoc", "/health", "/auth/validate", "/db"]
     
     async def dispatch(self, request: Request, call_next):
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
         # Skip auth for excluded paths
         if any(request.url.path.startswith(path) for path in self.exclude_paths):
             return await call_next(request)
@@ -51,7 +55,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
         
         # Validate Azure token
-        azure_payload = self.azure_validator.validate_token(azure_token)
+        try:
+            azure_payload = self.azure_validator.validate_token(azure_token)
+        except Exception as e:
+            logger.error(f"Error validating Azure token: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error_code": "INVALID_AZURE_TOKEN", "message": "Azure token is invalid or expired"}
+            )
+        
         if not azure_payload:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -59,7 +71,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
         
         # Validate PMA token
-        pma_payload = decode_pma_token(pma_token)
+        try:
+            pma_payload = decode_pma_token(pma_token)
+        except Exception as e:
+            logger.error(f"Error decoding PMA token: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error_code": "INVALID_PMA_TOKEN", "message": "PMA token is invalid or expired"}
+            )
+        
         if not pma_payload:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -103,8 +123,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         # - User's token is stale
                         if not role_for_workspace:
                             try:
-                                import logging
-                                logger = logging.getLogger(__name__)
                                 logger.info(f"Role not found in token for workspace {workspace_id}. Querying database for fresh roles...")
                                 
                                 from app.db.connection import get_db_pool
@@ -127,8 +145,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                     logger.warning(f"No roles found in database for user {pma_payload['user_id']}")
                             except Exception as e:
                                 # If DB refresh fails, continue with empty role (will be handled by require_role)
-                                import logging
-                                logger = logging.getLogger(__name__)
                                 logger.error(f"Failed to refresh roles from DB for user {pma_payload['user_id']}: {e}")
             except (ValueError, IndexError):
                 pass
